@@ -1,0 +1,57 @@
+<pre>
+
+● 1. 리스너 : 오라클 접속을 도와주는 프로세서
+
+[ ]$ lsnrctl status : 현재 리스너 상태 확인
+[ ]$ lsnrctl start  : 리스너 시작
+[ ]$ lsnrctl stop   : 리스너 종료  -- 해당 명령 실행시 리스너 접속 불가 ( 외부 툴에서도 불가 )
+
+
+-- 리스너를 통한 접속 ( 해당 방법으로 로그인이 된다는 것은 외부 툴에 접속할 수 있다는 뜻 (SQL Developer, Orange 등등..) )
+
+[ ]$ sqlplus [계정 ID]/[계정 PW]@[DB 서버 아이피]:[포트번호]/[서비스 명]
+
+
+
+동적 서비스 등록 : PMON(11g 이하) or LREG(12c 이상)가 오라클 서비스를 리스너에게 알려주는 방식
+
+[ ]$ ps -ef | grep -E "lreg|pmon" | grep -v grep
+oracle    2826     1  0  3월21 ?      00:00:03 ora_pmon_orcl
+oracle    2904     1  0  3월21 ?      00:00:01 ora_lreg_orcl
+
+
+
+정적 서비스 등록 : Listener.ora 파일에 서비스 이름 세팅
+
+[oracle@ora19c ~]$ cd $ORACLE_HOME/network/admin/
+[oracle@ora19c admin]$ cat listener.ora
+LISTENER =
+  (DESCRIPTION_LIST =
+    (DESCRIPTION =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = [DB 서버 아이피])(PORT = [포트번호]))
+      (ADDRESS = (PROTOCOL = IPC)(KEY = EXTPROC1521))
+    )
+  )
+
+# 아래는 예시일 뿐 실제 SID_NAME, 경로가 아님
+SID_LIST_LISTENER =
+  (SID_LIST =
+    (SID_DESC =
+      (GLOBAL_DBNAME = FREE)
+      (ORACLE_HOME  = /opt/oracle/product/26ai/dbhomeFree)
+      (SID_NAME     = FREE)
+    )
+    (SID_DESC =
+      (GLOBAL_DBNAME = freepdb1)
+      (ORACLE_HOME  = /opt/oracle/product/26ai/dbhomeFree)
+      (SID_NAME     = FREE)
+    )
+    (SID_DESC =
+      (GLOBAL_DBNAME = FREEXDB)
+      (ORACLE_HOME  = /opt/oracle/product/26ai/dbhomeFree)
+      (SID_NAME     = FREE)
+    )
+  )
+
+
+</pre>

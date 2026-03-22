@@ -1,0 +1,853 @@
+<pre>
+<br>
+DB 저장영역
+
+- Redo Log File
+- Data File
+- Parameter File
+- Password File
+- Conrol File
+- Backup File
+- Alert Log File
+- Trace File
+- Archive Log File
+
+--------------------------------------------------------------------------------------------------------------------------------------------
+
+● 1. Redo Log File
+
+  - 전원 OFFㆍ인스턴스 비정상 종료  →  메모리(Buffer Cache)에는 있지만, DataFile에 저장 되지 않은 영역을 Redo하여 복구 
+ 
+  - Fast Commit : 트랜잭션 커밋  →  데이터 파일에 즉시 기록 X, Redo Log에 먼저 기록하여 성능 최적화
+
+  - 리두 로그 순환 : ALTER DATABASE LOG SWITCH;  →  다음 그룹으로 넘어가서 기록 시작 ( 현재 그룹이 가득 찰 경우에도 넘어감 )
+
+  - Multiplexing : 하나의 파일이 손상되어도 다른 멤버로 운영 가능
+
+  - LGWR 프로세스가 현재(Current)에 로그 기록
+      CURRENT  : 현재 LGWR이 기록 중인 그룹
+      ACTIVE   : 기록은 끝, 기록 변경 사항이 Datafile에 저장되지 않아 인스턴스 복구 시 필요한 상태
+      INACTIVE : DataFile에 저장 완료, 인스턴스 복수 할때 필요하지 않은 상태  →  재사용 가능
+
+  - 로그 스위치 발생 시, DBWR → 데이터파일 기록 하도록 트리거
+
+  
+
+SQL> select group#, status, archived, sequence#, members from v$log;
+    GROUP# STATUS           ARC  SEQUENCE#    MEMBERS
+---------- ---------------- --- ---------- ----------
+         1 CURRENT          NO          19          1
+         2 INACTIVE         YES         17          1
+         3 INACTIVE         YES         18          1
+
+
+SQL> alter system switch logfile;
+SQL> select group#, status, archived, sequence#, members from v$log;
+
+    GROUP# STATUS           ARC  SEQUENCE#    MEMBERS
+---------- ---------------- --- ---------- ----------
+         1 ACTIVE           YES         19          1
+         2 CURRENT          NO          20          1
+         3 INACTIVE         YES         18          1
+
+-- 계속 로그 스위치 하면 현 그룹을 ACTIVE로 바꾸고 다음 그룹이 CURRENT로 바뀜  →  계속 넘어가다가 다음 그룹이 ACTIVE 상태면 Redo Log File에 작성하고 넘어가는 듯
+-- alter system checkpoint; 실행 시 current 제외하고 전부 INACTIVE 상태가 됨
+
+
+-- 추가
+alter database add
+logfile group ('[ORACLE_BASE]/oradata/[ORACLE_SID]/redo04a.log', '[ORACLE_BASE]/oradata/[ORACLE_SID]/redo04b.log') size 100m;
+
+또는
+alter database add logfile group 4 '[ORACLE_BASE]/oradata/[ORACLE_SID]/redo04a.log' size 100m;
+alter database add logfile member  '[ORACLE_BASE]/oradata/[ORACLE_SID]/redo04b.log' to group 4;
+
+
+-- 삭제 (INACTIVEㆍUNUSED 일때 가능)
+alter database drop logfile group 4;
+
+  -- 두 파일 다 삭제됨
+  [ORACLE_BASE]/oradata/[ORACLE_SID]/redo04a.log
+  [ORACLE_BASE]/oradata/[ORACLE_SID]/redo04b.log
+
+
+--------------------------------------------------------------------------------------------------------------------------------------------
+
+
+● 2. Data File
+
+  - 오라클 데이터베이스에서 실제 데이터가 저장되는 물리적인 파일 ( TableSpce → 1개 이상의 Data File)
+
+  - 테이블, 인덱스, 뷰 ...  유저 오브젝트
+
+
+select file_name from dba_data_files;
+FILE_NAME
+--------------------------------------------------------------------------------
+[ORACLE_BASE]/oradata/[ORACLE_SID]/users01.dbf
+[ORACLE_BASE]/oradata/[ORACLE_SID]/undotbs01.dbf
+[ORACLE_BASE]/oradata/[ORACLE_SID]/system01.dbf
+[ORACLE_BASE]/oradata/[ORACLE_SID]/sysaux01.dbf
+
+
+create tablespace ts01 datafile '[ORACLE_BASE]/oradata/[ORACLE_SID]/ts01.dbf' size 50m;
+
+alter table emp move tablespace ts01;
+select table_name, tablespace_name from user_tables where table_name = 'EMP';
+
+TABLE_NAME TABLESPACE_NAME
+---------- ---------------
+EMP        TS01
+
+
+-- 테이블 스페이스에 datafile 추가
+alter tablespace system add datafile '/[ORACLE_BASE]/oradata/[ORACLE_SID]/system02.dbf' size 100m;
+
+-- datafile size 변경
+alter database datafile '/[ORACLE_BASE]/oradata/[ORACLE_SID]/system01.dbf' resize 1800m;
+
+-- 테이블 스페이스 삭제 (ts01)
+alter table emp move tablespace users;
+alter table dept move tablespace users;
+
+select table_name, tablespace_name from user_tables where tablespace_name = 'TS01';   -- no rows selected
+
+drop tablespace ts01 including contents and datafiles;
+
+
+
+
+# 데이터 파일 이동 (NON-SYSTEM)
+  - 디스크 공간 부족   ex) $ORACLE_BASE 의 사용률이 90% 넘어갈 경우
+  - 병목현상 해결
+  - 하드웨어 교체ㆍ점검
+  - 파일 이름ㆍ경로 표준화
+
+NON-SYSTEM 데이터 파일( DB : Online 일때도 이동ㆍ복구 가능 )
+  USER TableSpace : 유저 오브젝트
+  Undotbs : 트랙잭션 Rollback 데이터, 읽기 일관성 데이터
+  Temp    : 정렬 작업 임시 공간
+
+SYSTEM 데이터 파일 ( DB : Offline 해야 이동ㆍ복구 가능)
+  SYSTEM : Data Dictionary (테이블 구조, 권한 등)
+  SYSAUX : SYSTEM 보조, AWR 저장
+
+
+SQL> select tablespace_name, file_name from dba_data_files where tablespace_name not in ('SYSTEM', 'SYSAUX');
+TABLESPACE_NAME FILE_NAME
+--------------- --------------------------------------------------
+USERS           [ORACLE_BASE]/oradata/[ORACLE_SID]/users01.dbf
+UNDOTBS1        [ORACLE_BASE]/oradata/[ORACLE_SID]undotbs01.dbf
+
+SQL> select tablespace_name, file_name from dba_temp_files;
+TABLESPACE_NAME FILE_NAME
+--------------- --------------------------------------------------
+TEMP            [ORACLE_BASE]/oradata/[ORACLE_SID]temp01.dbf
+
+
+
+
+
+# 데이터 파일 옮겨보기 ( Non - System )
+
+[ ]$ mkdir oradata  # 홈 화면에 데이터 파일을 이동 시킬 디렉토리 추가
+
+alter tablespace users offline normal;
+
+select tablespace_name, status from dba_tablespaces; -- user 테이블 스페이스 offline 확인
+
+[ ]$ cp [ORACLE_BASE]/oradata/[ORACLE_SID]/users01.dbf [HOME]/oradata/users01.dbf -- 옮기기
+
+alter tablespace users
+rename datafile '[ORACLE_BASE]/oradata/[ORACLE_SID]/users01.dbf'  
+             to '[HOME]/oradata/users01.dbf';                    
+
+
+-- temp는 시스템의 안정성을 위해 OFFLINE을 막아둠
+
+ ① ALTER DATABASE TEMPFILE '경로' OFFLINE; -- 개별 파일 단위 오프라인 방식
+ ② 새로운 TEMP 생성 후 기본값(Default)을 바꿔주는 방식
+
+create temporary tablespace temp2
+tempfile '[HOME]/oradata/temp02.dbf' size 100m;
+
+alter database default temporary tablespace temp2;
+
+select * from database_properties where property_name='DEFAULT_TEMP_TABLESPACE'; 
+
+drop tablespace temp including contents and datafiles;  -- temp 사용 중이면 drop 안 됨
+
+
+-- DB가 활성화 되어있으면 UNDO OFFLINE 안됨
+
+create undo tablespace undotbs2
+datafile '[HOME]/oradata/undotbs02.dbf' size 100m;
+
+alter system set undo_tablespace='undotbs2' scope=both;
+
+show parameter undo_tablespace
+
+drop tablespace undotbs1 including contents and datafiles; -- 기존 undo tablespace 삭제 (undotbs1 활성 트랜잭션 모두 종료)
+
+
+
+
+
+
+# 데이터 파일 옮겨보기 ( System )
+
+ - SYSTEM, SYSAUX 둘다 NON-SYSTEM 옮기는 방법과 유사함
+   ( 차이점은 USER는 테이블 스페이스 오프라인, SYS는 DB 자체를 셧다운 )
+   ( USER는 테이블 스페이스를 RENAME FILE,   SYS는 DATABASE 단위로 RENAME FILE )
+
+select tablespace_name, file_name from dba_data_files where tablespace_name in ('SYSTEM', 'SYSAUX');
+TABLESPACE_NAME  FILE_NAME
+---------------- -----------------------------------------------
+SYSTEM           [ORACLE_BASE]/oradata/[ORACLE_SID]/system01.dbf
+SYSAUX           [ORACLE_BASE]/oradata/[ORACLE_SID]/sysaux01.dbf
+SYSTEM           [ORACLE_BASE]/oradata/[ORACLE_SID]/system02.dbf
+SYSAUX           [ORACLE_BASE]/oradata/[ORACLE_SID]/sysaux02.dbf
+
+
+shutdown immediate
+
+
+[ ]$ cp [ORACLE_BASE]/oradata/[ORACLE_SID]/system01.dbf [HOME]/oradata/system01.dbf
+[ ]$ cp [ORACLE_BASE]/oradata/[ORACLE_SID]/system02.dbf [HOME]/oradata/system02.dbf
+[ ]$ cp [ORACLE_BASE]/oradata/[ORACLE_SID]/sysaux01.dbf [HOME]/oradata/sysaux01.dbf
+[ ]$ cp [ORACLE_BASE]/oradata/[ORACLE_SID]/sysaux02.dbf [HOME]/oradata/sysaux02.dbf
+[ ]$ cd oradata
+[ oradata]$ ls -l
+합계 4141328
+-rw-r-----. 1 oracle oinstall  786440192  3월 22 10:28 sysaux01.dbf
+-rw-r-----. 1 oracle oinstall 1073750016  3월 22 10:28 sysaux02.dbf
+-rw-r-----. 1 oracle oinstall 1195384832  3월 22 10:28 system01.dbf
+-rw-r-----. 1 oracle oinstall 1073750016  3월 22 10:28 system02.dbf
+-rw-r-----. 1 oracle oinstall  104865792  3월 22 10:07 temp02.dbf
+-rw-r-----. 1 oracle oinstall  104865792  3월 22 10:24 undotbs02.dbf
+-rw-r-----. 1 oracle oinstall    5251072  3월 22 10:24 users01.dbf
+
+
+startup mount -- ★ 중요 : startup 하면 안됨
+
+alter database rename file '/u01/app/oracle/oradata/ORCL/system01.dbf'
+                        to '/home/oracle/oradata/system01.dbf';
+
+alter database rename file '/u01/app/oracle/oradata/ORCL/system02.dbf'
+                        to '/home/oracle/oradata/system02.dbf';
+
+alter database rename file '/u01/app/oracle/oradata/ORCL/sysaux01.dbf'
+                        to '/home/oracle/oradata/sysaux01.dbf';
+
+alter database rename file '/u01/app/oracle/oradata/ORCL/sysaux02.dbf'
+                        to '/home/oracle/oradata/sysaux02.dbf';
+
+alter database open;
+
+
+
+
+--------------------------------------------------------------------------------------------------------------------------------------------
+
+
+● 3. Parameter File
+
+  ① PFILE (Parameter File)         : 텍스트 파일,   직접 편집가능 (수동 관리),         init[ORACLE_SID].ora
+  ② SPFILE (Server Parameter File) : 바이너리 파일, 직접 수정불가 (오라클 서버가 관리), spfile[ORACLE_ISD].ora,  SCOPE=SPFILE/BOTH
+
+  - show parameter [Parameter_Name] 적으면 나오는 값들
+    + show parameter spfile  →  값 O : SPFILE 사용 중,  NULL : PFILE 사용 중일 가능성 큼
+
+  - 파라미터 파일 찾는 우선순위
+    spfile[ORACLE_SID].ora  →  spfile.ora  →  init[ORACLE_SID].ora
+
+  - SCOPE
+    ALTER SYSTEM SET [Parameter_Name] = 500 SCOPE=(MEMORY / SPFILE / BOTH);
+      MEMORY : 휘발성, 재기동하면 사라짐      -- MEMORY 옵션이 안먹히는 파라미터도 있음 → SPFILE 옵션 적용
+      SPFILE : 파일에 저장, 다음 기동시 적용
+      BOTH   : 가능한 바로 적용, 영구 저장
+
+  - spfile 없을 경우
+    create spfile form pfile;
+
+  - spfile, pfile 둘다 있는 경우  →  찾는 우선순위에 따라 spfile로 기동하려고 함
+    startup pfile = '$ORACLE_HOME/dbs/initorcl.ora'  -- pfile 기동 방법
+
+
+  - spfile을 무리하게 설정
+
+    alter system set db_files=1000000 scope=spfile;  -- 최대 65534 (2^16 - 2), 1000000은 너무 커서 startup 할때 읽기 시작도 안하고 에러
+    파라미터 파일 경로로 찾아감
+    [ ]$ cat [ORACLE_HOME]/dbs/init[ORACLE_SID].ora | grep db_files
+    *.db_files=100  # 65534 보다 작게 수정
+
+    [ ]$ sqlplus / as sysdba
+
+    create spfile from pfile;  -- 직접 수정한 pfile로 spfile회복
+
+    startup 가능
+
+
+  - pfile 없음, spfile 손상
+      backup을 만들어 둔 경우, cp로 backup 
+
+
+backup도 없는 경우  vi [ORACLE_HOME]/dbs/init[ORACLE_SID].ora
+
+*.processes                = 500
+*.nls_language             = "KOREAN"
+*.nls_territory            = "KOREA"
+*.dbwr_io_slaves           = 0
+*.sga_target               = 2304M
+*.control_files            = "[ORACLE_BASE]/oradata/[ORACLE_SID]/control01.ctl"
+*.control_files            = "[ORACLE_BASE]/oradata/[ORACLE_SID]/control02.ctl"
+*.db_block_size            = 8192
+*.compatible               = "19.0.0"
+*.log_checkpoint_timeout   = 600
+*.db_files                 = 100
+*.db_recovery_file_dest    = "[ORACLE_HOME]/dbs/arch"
+*.db_recovery_file_dest_size= 10G
+*.fast_start_mttr_target   = 600
+*.undo_tablespace          = "undotbs2"
+*.remote_login_passwordfile= "EXCLUSIVE"
+*.dispatchers              = "(PROTOCOL=TCP) (SERVICE=orclXDB)"
+*.local_listener           = "LISTENER_ORCL"
+*.audit_file_dest          = "[ORACLE_BASE]/admin/orcl/adump"
+*.audit_trail              = "DB"
+*.db_name                  = "orcl"
+*.open_cursors             = 270
+*.pga_aggregate_target     = 767M
+*.statistics_level         = "all"
+*.diagnostic_dest          = "/u01/app/oracle"
+
+
+      윗 내용으로 파라미터 파일 생성 후, DB 접속 (NOMOUNT)
+      create spfile from pfile;
+      startup 성공
+
+
+--------------------------------------------------------------------------------------------------------------------------------------------
+
+
+● 4. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+</pre>
